@@ -59,3 +59,19 @@ fn decodeBencode(encodedValue: []const u8) !BTypes {
         std.process.exit(1);
     }
 }
+
+// introducing tests here
+test "strings" {
+    try std.testing.expectEqualStrings((try decodeBencode("6:banana")).string, "banana");
+    try std.testing.expectEqualStrings((try decodeBencode("5:hello")).string, "hello");
+    try std.testing.expectEqualStrings((try decodeBencode("3:arm")).string, "arm");
+}
+
+test "integers" {
+    try std.testing.expectEqual((try decodeBencode("i535903435363e")).integer, 535903435363);
+    try std.testing.expectEqual((try decodeBencode("i-535903435363e")).integer, -535903435363);
+    try std.testing.expectEqual((try decodeBencode("i52e")).integer, 52);
+    try std.testing.expectEqual((try decodeBencode("i-52e")).integer, -52);
+    try std.testing.expectError(error.InvalidArgument, decodeBencode("i52"));
+    try std.testing.expectError(error.InvalidCharacter, decodeBencode("ihelloe"));
+}
