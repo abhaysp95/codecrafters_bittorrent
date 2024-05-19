@@ -49,6 +49,6 @@ fn decodeBencodeInt(encodedValue: []const u8) !isize {
         return std.fmt.parseInt(isize, encodedValue[1 .. len - 1], 10);
     } else {
         try stdout.print("Only integers are supported at the moment\n", .{});
-        std.process.exit(1);
+        std.process.exit(0);
     }
 }
