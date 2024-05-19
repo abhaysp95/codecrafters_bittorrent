@@ -19,7 +19,7 @@ pub fn main() !void {
 
         // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decodedStr = decodeBencode(encodedStr) catch {
+        const decodedStr = decodeBencodeInt(encodedStr) catch {
             try stdout.print("Invalid encoded value\n", .{});
             std.process.exit(1);
         };
@@ -30,7 +30,7 @@ pub fn main() !void {
     }
 }
 
-fn decodeBencode(encodedValue: []const u8) !*const []const u8 {
+fn decodeBencodeStr(encodedValue: []const u8) !*const []const u8 {
     if (encodedValue[0] >= '0' and encodedValue[0] <= '9') {
         const firstColon = std.mem.indexOf(u8, encodedValue, ":");
         if (firstColon == null) {
@@ -39,6 +39,16 @@ fn decodeBencode(encodedValue: []const u8) !*const []const u8 {
         return &encodedValue[firstColon.? + 1 ..];
     } else {
         try stdout.print("Only strings are supported at the moment\n", .{});
+        std.process.exit(1);
+    }
+}
+
+fn decodeBencodeInt(encodedValue: []const u8) !*const []const u8 {
+    const len = encodedValue.len;
+    if (encodedValue[0] == 'i' and encodedValue[len - 1] == 'e') {
+        return &encodedValue[1 .. len - 1];
+    } else {
+        try stdout.print("Only integers are supported at the moment\n", .{});
         std.process.exit(1);
     }
 }
