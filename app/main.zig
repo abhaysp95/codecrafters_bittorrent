@@ -19,14 +19,14 @@ pub fn main() !void {
 
         // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decodedStr = decodeBencodeInt(encodedStr) catch {
+        const decodedInt = decodeBencodeInt(encodedStr) catch {
             try stdout.print("Invalid encoded value\n", .{});
             std.process.exit(1);
         };
-        var string = std.ArrayList(u8).init(allocator);
-        try std.json.stringify(decodedStr.*, .{}, string.writer());
-        const jsonStr = try string.toOwnedSlice();
-        try stdout.print("{s}\n", .{jsonStr});
+        // var string = std.ArrayList(u8).init(allocator);
+        // try std.json.stringify(decodedStr.*, .{}, string.writer());
+        // const jsonStr = try string.toOwnedSlice();
+        try stdout.print("{d}\n", .{decodedInt});
     }
 }
 
@@ -43,10 +43,10 @@ fn decodeBencodeStr(encodedValue: []const u8) !*const []const u8 {
     }
 }
 
-fn decodeBencodeInt(encodedValue: []const u8) !*const []const u8 {
+fn decodeBencodeInt(encodedValue: []const u8) !isize {
     const len = encodedValue.len;
     if (encodedValue[0] == 'i' and encodedValue[len - 1] == 'e') {
-        return &encodedValue[1 .. len - 1];
+        return std.fmt.parseInt(isize, encodedValue[1 .. len - 1], 10);
     } else {
         try stdout.print("Only integers are supported at the moment\n", .{});
         std.process.exit(1);
