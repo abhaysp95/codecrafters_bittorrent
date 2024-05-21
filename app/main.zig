@@ -1,10 +1,17 @@
 const std = @import("std");
 const stdout = std.io.getStdOut().writer();
 const allocator = std.heap.page_allocator;
+const ArrayList = std.ArrayList;
 
-const BTypes = union(enum) {
+const BType = union(enum) {
     string: []const u8,
     integer: isize,
+    list: []BType,
+};
+
+const Payload = struct {
+    btype: BType,
+    size: usize,
 };
 
 pub fn main() !void {
@@ -24,24 +31,77 @@ pub fn main() !void {
 
         // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decodedStr = decodeBencode(encodedStr) catch {
+        const decodedStr = decodeBencodeList(encodedStr[1..]) catch {
             try stdout.print("Invalid encoded value\n", .{});
             std.process.exit(1);
         };
         var string = std.ArrayList(u8).init(allocator);
         switch (decodedStr) {
-            inline .string, .integer => |str| try std.json.stringify(str, .{}, string.writer()),
+            // .string, .integer => |str| try std.json.stringify(str, .{}, string.writer()),
+            .list => |l| try std.json.stringify(l, .{}, string.writer()),
         }
         const jsonStr = try string.toOwnedSlice();
         try stdout.print("{s}\n", .{jsonStr});
     }
 }
 
-fn decodeBencode(encodedValue: []const u8) !BTypes {
+fn decodeBencodeList(encodedValue: []const u8) !Payload {
+    switch (encodedValue[0]) {
+        0...9 => {
+            const colon_idx = std.mem.indexOf(u8, encodedValue, ":");
+            if (colon_idx) |idx| {
+                const str_size = try std.fmt.parseInt(usize, encodedValue[0..idx], 10);
+                const start_idx = idx + 1;
+                const end_idx = start_idx + str_size;
+                return Payload{
+                    .btype = .{ .string = encodedValue[start_idx..end_idx] },
+                    .size = end_idx,
+                };
+            } else {
+                // TODO: work on error
+                return error.InvalidArgument;
+            }
+        },
+        'i' => {
+            const e_idx = std.mem.indexOf(u8, encodedValue, "e");
+            if (e_idx) |idx| {
+                return Payload{
+                    .btype = .{
+                        .integer = try std.fmt.parseInt(isize, encodedValue[1..idx], 10),
+                    },
+                    .size = e_idx + 1,
+                };
+            } else {
+                // TODO: work on error
+                return error.InvalidArgument;
+            }
+        },
+        'l' => {
+            const list = ArrayList(BType).init(allocator);
+            defer list.deinit();
+            var cidx: usize = 1;
+            while (encodedValue[cidx] != 'e') {
+                const deserialized = try decodeBencodeList(encodedValue[cidx..]);
+                try list.append(deserialized.btype);
+                cidx += deserialized.size;
+            }
+            return Payload{
+                .btype = list.toOwnedSlice(),
+                .size = cidx + 1,
+            };
+        },
+        else => {
+            try stdout.print("Only strings and integers are supported at the moment\n", .{});
+            std.process.exit(1);
+        },
+    }
+}
+
+fn decodeBencode(encodedValue: []const u8) !BType {
     if (encodedValue[0] >= '0' and encodedValue[0] <= '9') {
         const firstColon = std.mem.indexOf(u8, encodedValue, ":");
         if (firstColon) |cidx| {
-            return BTypes{
+            return BType{
                 .string = encodedValue[cidx + 1 ..],
             };
         }
@@ -49,7 +109,7 @@ fn decodeBencode(encodedValue: []const u8) !BTypes {
     } else if (encodedValue[0] == 'i') {
         const eidx = std.mem.indexOf(u8, encodedValue, "e");
         if (eidx) |idx| {
-            return BTypes{
+            return BType{
                 .integer = try std.fmt.parseInt(isize, encodedValue[1..idx], 10),
             };
         }
