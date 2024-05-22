@@ -31,23 +31,43 @@ pub fn main() !void {
 
         // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decodedStr = decodeBencodeList(encodedStr[1..]) catch {
-            try stdout.print("Invalid encoded value\n", .{});
+        const decodedStr = decodeBencodeList(encodedStr) catch {
+            try stderr.print("Invalid encoded value\n", .{});
             std.process.exit(1);
         };
         var string = std.ArrayList(u8).init(allocator);
-        switch (decodedStr) {
-            // .string, .integer => |str| try std.json.stringify(str, .{}, string.writer()),
-            .list => |l| try std.json.stringify(l, .{}, string.writer()),
-        }
-        const jsonStr = try string.toOwnedSlice();
-        try stdout.print("{s}\n", .{jsonStr});
+        defer string.deinit();
+        try printBencode(&string, decodedStr.btype);
+        const resStr = try string.toOwnedSlice();
+        try stdout.print("{s}\n", .{resStr});
+    }
+}
+
+fn printBencode(string: *ArrayList(u8), payload: BType) !void {
+    switch (payload) {
+        .integer => |int| {
+            try std.json.stringify(int, .{}, string.writer());
+        },
+        .string => |str| {
+            try std.json.stringify(str, .{}, string.writer());
+        },
+        // [int, [string, int]]
+        .list => |list| {
+            try string.append('[');
+            for (list, 0..) |item, idx| {
+                try printBencode(string, item);
+                if (idx != list.len - 1) {
+                    try string.append(',');
+                }
+            }
+            try string.append(']');
+        },
     }
 }
 
 fn decodeBencodeList(encodedValue: []const u8) !Payload {
     switch (encodedValue[0]) {
-        0...9 => {
+        '0'...'9' => {
             const colon_idx = std.mem.indexOf(u8, encodedValue, ":");
             if (colon_idx) |idx| {
                 const str_size = try std.fmt.parseInt(usize, encodedValue[0..idx], 10);
@@ -69,7 +89,7 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
                     .btype = .{
                         .integer = try std.fmt.parseInt(isize, encodedValue[1..idx], 10),
                     },
-                    .size = e_idx + 1,
+                    .size = e_idx.? + 1,
                 };
             } else {
                 // TODO: work on error
@@ -77,7 +97,7 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
             }
         },
         'l' => {
-            const list = ArrayList(BType).init(allocator);
+            var list = ArrayList(BType).init(allocator);
             defer list.deinit();
             var cidx: usize = 1;
             while (encodedValue[cidx] != 'e') {
@@ -86,7 +106,9 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
                 cidx += deserialized.size;
             }
             return Payload{
-                .btype = list.toOwnedSlice(),
+                .btype = .{
+                    .list = try list.toOwnedSlice(),
+                },
                 .size = cidx + 1,
             };
         },
