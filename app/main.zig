@@ -1,5 +1,6 @@
 const std = @import("std");
 const stdout = std.io.getStdOut().writer();
+const stderr = std.io.getStdErr().writer();
 const allocator = std.heap.page_allocator;
 const ArrayList = std.ArrayList;
 
@@ -14,12 +15,17 @@ const Payload = struct {
     size: usize,
 };
 
+const DecodeError = error{
+    MalformedInput,
+    InvalidValue,
+};
+
 pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 3) {
-        try stdout.print("Usage: your_bittorrent.zig <command> <args>\n", .{});
+        try stderr.print("Usage: your_bittorrent.zig <command> <args>\n", .{});
         std.process.exit(1);
     }
 
@@ -31,8 +37,12 @@ pub fn main() !void {
 
         // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decodedStr = decodeBencodeList(encodedStr) catch {
-            try stderr.print("Invalid encoded value\n", .{});
+        const decodedStr = decodeBencodeList(encodedStr) catch |err| {
+            if (err == DecodeError.InvalidValue) {
+                try stderr.print("Provided encoding is invalid\n", .{});
+            } else if (err == DecodeError.MalformedInput) {
+                try stderr.print("0 prefixed length for string decoding is not supported.\n", .{});
+            }
             std.process.exit(1);
         };
         var string = std.ArrayList(u8).init(allocator);
@@ -51,7 +61,7 @@ fn printBencode(string: *ArrayList(u8), payload: BType) !void {
         .string => |str| {
             try std.json.stringify(str, .{}, string.writer());
         },
-        // [int, [string, int]]
+        // Eg., [int, [string, int]]
         .list => |list| {
             try string.append('[');
             for (list, 0..) |item, idx| {
@@ -70,6 +80,11 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
         '0'...'9' => {
             const colon_idx = std.mem.indexOf(u8, encodedValue, ":");
             if (colon_idx) |idx| {
+                const str_int = encodedValue[0..idx];
+                const has_prefix_zero = str_int.len > 1 and (str_int[0] == 0 or (str_int[0] == '-' and str_int[1] == '0'));
+                if (has_prefix_zero) {
+                    return DecodeError.InvalidValue;
+                }
                 const str_size = try std.fmt.parseInt(usize, encodedValue[0..idx], 10);
                 const start_idx = idx + 1;
                 const end_idx = start_idx + str_size;
@@ -78,8 +93,7 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
                     .size = end_idx,
                 };
             } else {
-                // TODO: work on error
-                return error.InvalidArgument;
+                return DecodeError.MalformedInput;
             }
         },
         'i' => {
@@ -92,18 +106,20 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
                     .size = e_idx.? + 1,
                 };
             } else {
-                // TODO: work on error
-                return error.InvalidArgument;
+                return DecodeError.MalformedInput;
             }
         },
         'l' => {
             var list = ArrayList(BType).init(allocator);
             defer list.deinit();
             var cidx: usize = 1;
-            while (encodedValue[cidx] != 'e') {
+            while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
                 const deserialized = try decodeBencodeList(encodedValue[cidx..]);
                 try list.append(deserialized.btype);
                 cidx += deserialized.size;
+            }
+            if (cidx == encodedValue.len) { // 'e' denoting ending of list is missing
+                return error.MalformedInput;
             }
             return Payload{
                 .btype = .{
