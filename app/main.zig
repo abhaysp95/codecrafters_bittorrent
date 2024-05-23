@@ -2,6 +2,7 @@ const std = @import("std");
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
 const allocator = std.heap.page_allocator;
+const assert = std.debug.assert;
 const ArrayList = std.ArrayList;
 
 const BType = union(enum) {
@@ -17,7 +18,7 @@ const Payload = struct {
 
 const DecodeError = error{
     MalformedInput,
-    InvalidValue,
+    InvalidEncoding,
 };
 
 pub fn main() !void {
@@ -37,11 +38,11 @@ pub fn main() !void {
 
         // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decodedStr = decodeBencodeList(encodedStr) catch |err| {
-            if (err == DecodeError.InvalidValue) {
-                try stderr.print("Provided encoding is invalid\n", .{});
-            } else if (err == DecodeError.MalformedInput) {
-                try stderr.print("0 prefixed length for string decoding is not supported.\n", .{});
+        const decodedStr = decodeBencode(encodedStr) catch |err| {
+            switch (err) {
+                DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
+                DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
+                else => try stderr.print("Error occured: {}\n", .{err}),
             }
             std.process.exit(1);
         };
@@ -75,15 +76,15 @@ fn printBencode(string: *ArrayList(u8), payload: BType) !void {
     }
 }
 
-fn decodeBencodeList(encodedValue: []const u8) !Payload {
+fn decodeBencode(encodedValue: []const u8) !Payload {
     switch (encodedValue[0]) {
         '0'...'9' => {
             const colon_idx = std.mem.indexOf(u8, encodedValue, ":");
             if (colon_idx) |idx| {
                 const str_int = encodedValue[0..idx];
-                const has_prefix_zero = str_int.len > 1 and (str_int[0] == 0 or (str_int[0] == '-' and str_int[1] == '0'));
+                const has_prefix_zero = str_int.len > 1 and (str_int[0] == '0' or (str_int[0] == '-' and str_int[1] == '0'));
                 if (has_prefix_zero) {
-                    return DecodeError.InvalidValue;
+                    return DecodeError.InvalidEncoding;
                 }
                 const str_size = try std.fmt.parseInt(usize, encodedValue[0..idx], 10);
                 const start_idx = idx + 1;
@@ -114,12 +115,12 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
             defer list.deinit();
             var cidx: usize = 1;
             while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
-                const deserialized = try decodeBencodeList(encodedValue[cidx..]);
+                const deserialized = try decodeBencode(encodedValue[cidx..]);
                 try list.append(deserialized.btype);
                 cidx += deserialized.size;
             }
             if (cidx == encodedValue.len) { // 'e' denoting ending of list is missing
-                return error.MalformedInput;
+                return error.InvalidEncoding;
             }
             return Payload{
                 .btype = .{
@@ -132,29 +133,6 @@ fn decodeBencodeList(encodedValue: []const u8) !Payload {
             try stdout.print("Only strings and integers are supported at the moment\n", .{});
             std.process.exit(1);
         },
-    }
-}
-
-fn decodeBencode(encodedValue: []const u8) !BType {
-    if (encodedValue[0] >= '0' and encodedValue[0] <= '9') {
-        const firstColon = std.mem.indexOf(u8, encodedValue, ":");
-        if (firstColon) |cidx| {
-            return BType{
-                .string = encodedValue[cidx + 1 ..],
-            };
-        }
-        return error.InvalidArgument;
-    } else if (encodedValue[0] == 'i') {
-        const eidx = std.mem.indexOf(u8, encodedValue, "e");
-        if (eidx) |idx| {
-            return BType{
-                .integer = try std.fmt.parseInt(isize, encodedValue[1..idx], 10),
-            };
-        }
-        return error.InvalidArgument;
-    } else {
-        try stdout.print("Only strings and integers are supported at the moment\n", .{});
-        std.process.exit(1);
     }
 }
 
