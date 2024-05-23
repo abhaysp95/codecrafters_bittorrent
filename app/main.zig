@@ -157,4 +157,6 @@ test "integers" {
     try std.testing.expectEqual((try decodeBencode("i-52e")).btype.integer, -52);
     try std.testing.expectError(error.MalformedInput, decodeBencode("i52"));
     try std.testing.expectError(error.MalformedInput, decodeBencode("ihelloe"));
+    try std.testing.expectError(error.InvalidEncoding, decodeBencode("i010e"));
+    try std.testing.expectError(error.InvalidEncoding, decodeBencode("i-02e"));
 }
