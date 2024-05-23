@@ -78,14 +78,11 @@ fn printBencode(string: *ArrayList(u8), payload: BType) !void {
 
 fn decodeBencode(encodedValue: []const u8) !Payload {
     switch (encodedValue[0]) {
+
+        // decoding for string
         '0'...'9' => {
             const colon_idx = std.mem.indexOf(u8, encodedValue, ":");
             if (colon_idx) |idx| {
-                const str_int = encodedValue[0..idx];
-                const has_prefix_zero = str_int.len > 1 and (str_int[0] == '0' or (str_int[0] == '-' and str_int[1] == '0'));
-                if (has_prefix_zero) {
-                    return DecodeError.InvalidEncoding;
-                }
                 const str_size = try std.fmt.parseInt(usize, encodedValue[0..idx], 10);
                 const start_idx = idx + 1;
                 const end_idx = start_idx + str_size;
@@ -97,19 +94,28 @@ fn decodeBencode(encodedValue: []const u8) !Payload {
                 return DecodeError.MalformedInput;
             }
         },
+
+        // decoding for integer
         'i' => {
             const e_idx = std.mem.indexOf(u8, encodedValue, "e");
             if (e_idx) |idx| {
+                const str_int = encodedValue[1..idx];
+                const has_prefix_zero = str_int.len > 1 and (str_int[0] == '0' or (str_int[0] == '-' and str_int[1] == '0'));
+                if (has_prefix_zero) {
+                    return DecodeError.InvalidEncoding;
+                }
                 return Payload{
-                    .btype = .{
-                        .integer = try std.fmt.parseInt(isize, encodedValue[1..idx], 10),
-                    },
+                    .btype = .{ .integer = std.fmt.parseInt(isize, encodedValue[1..idx], 10) catch {
+                        return DecodeError.MalformedInput;
+                    } },
                     .size = e_idx.? + 1,
                 };
             } else {
                 return DecodeError.MalformedInput;
             }
         },
+
+        // decoding for list
         'l' => {
             var list = ArrayList(BType).init(allocator);
             defer list.deinit();
@@ -138,16 +144,17 @@ fn decodeBencode(encodedValue: []const u8) !Payload {
 
 // introducing tests here
 test "strings" {
-    try std.testing.expectEqualStrings((try decodeBencode("6:banana")).string, "banana");
-    try std.testing.expectEqualStrings((try decodeBencode("5:hello")).string, "hello");
-    try std.testing.expectEqualStrings((try decodeBencode("3:arm")).string, "arm");
+    try std.testing.expectEqualStrings((try decodeBencode("6:banana")).btype.string, "banana");
+    try std.testing.expectEqualStrings((try decodeBencode("5:hello")).btype.string, "hello");
+    try std.testing.expectEqualStrings((try decodeBencode("3:arm")).btype.string, "arm");
+    try std.testing.expectError(error.MalformedInput, decodeBencode("5hello"));
 }
 
 test "integers" {
-    try std.testing.expectEqual((try decodeBencode("i535903435363e")).integer, 535903435363);
-    try std.testing.expectEqual((try decodeBencode("i-535903435363e")).integer, -535903435363);
-    try std.testing.expectEqual((try decodeBencode("i52e")).integer, 52);
-    try std.testing.expectEqual((try decodeBencode("i-52e")).integer, -52);
-    try std.testing.expectError(error.InvalidArgument, decodeBencode("i52"));
-    try std.testing.expectError(error.InvalidCharacter, decodeBencode("ihelloe"));
+    try std.testing.expectEqual((try decodeBencode("i535903435363e")).btype.integer, 535903435363);
+    try std.testing.expectEqual((try decodeBencode("i-535903435363e")).btype.integer, -535903435363);
+    try std.testing.expectEqual((try decodeBencode("i52e")).btype.integer, 52);
+    try std.testing.expectEqual((try decodeBencode("i-52e")).btype.integer, -52);
+    try std.testing.expectError(error.MalformedInput, decodeBencode("i52"));
+    try std.testing.expectError(error.MalformedInput, decodeBencode("ihelloe"));
 }
