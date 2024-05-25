@@ -4,11 +4,13 @@ const stderr = std.io.getStdErr().writer();
 const allocator = std.heap.page_allocator;
 const assert = std.debug.assert;
 const ArrayList = std.ArrayList;
+const HashMap = std.StringHashMap;
 
 const BType = union(enum) {
     string: []const u8,
     integer: isize,
     list: []BType,
+    dict: HashMap(BType),
 };
 
 const Payload = struct {
@@ -131,6 +133,31 @@ fn decodeBencode(encodedValue: []const u8) !Payload {
                 .size = cidx + 1,
             };
         },
+
+        'd' => {
+            var map = HashMap(BType).init(allocator);
+            // defer map.deinit();
+            var cidx: usize = 1;
+            while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
+                // if key is not string, it should throw error
+                const key = try decodeBencode(encodedValue[cidx..]);
+                cidx += key.size;
+                const value = try decodeBencode(encodedValue[cidx..]);
+                cidx += value.size;
+                // situations in which put will throw error ?
+                try map.put(key.btype.string, value.btype);
+            }
+            if (cidx == encodedValue.len) {
+                return error.InvalidEncoding;
+            }
+            return Payload{
+                .btype = .{
+                    .dict = map,
+                },
+                .size = cidx + 1,
+            };
+        },
+
         else => {
             try stdout.print("Only strings and integers are supported at the moment\n", .{});
             std.process.exit(1);
