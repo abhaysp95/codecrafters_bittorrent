@@ -71,6 +71,26 @@ fn printBencode(string: *ArrayList(u8), payload: BType) !void {
             }
             try string.append(']');
         },
+
+        // Eg., d3:fool3:bari-52ee5:helloi52ee
+        .dict => |dict| {
+            try string.append('{');
+            var iterator = dict.keyIterator();
+            var idx: usize = 0;
+            while (iterator.next()) |key| {
+                // try stdout.print("for key: {s}\n", .{key.*});
+                try std.json.stringify(key.*, .{}, string.writer());
+                try string.append(':');
+                try printBencode(string, dict.get(key.*).?);
+                if (idx != dict.count() - 1) {
+                    try string.append(',');
+                }
+                idx += 1;
+            }
+            // TODO: think of how to free dict
+            // defer dict.deinit();
+            try string.append('}');
+        },
     }
 }
 
