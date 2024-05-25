@@ -142,6 +142,44 @@ fn decodeBencode(encodedValue: []const u8) !Payload {
     }
 }
 
+fn testIsListEqual(l1: BType, l2: BType) bool {
+    switch (l1) {
+        .integer => |int1| {
+            switch (l2) {
+                .integer => |int2| {
+                    return if (int1 == int2) true else false;
+                },
+                else => return false,
+            }
+        },
+        .string => |str1| {
+            switch (l2) {
+                .string => |str2| {
+                    return if (std.mem.eql(u8, str1, str2)) true else false;
+                },
+                else => return false,
+            }
+        },
+        .list => |list1| {
+            switch (l2) {
+                .list => |list2| {
+                    if (list1.len != list2.len) {
+                        return false;
+                    }
+                    var idx: usize = 0;
+                    while (idx != list1.len) : (idx += 1) {
+                        if (!testIsListEqual(list1[idx], list2[idx])) {
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+                else => return false,
+            }
+        },
+    }
+}
+
 // introducing tests here
 test "strings" {
     try std.testing.expectEqualStrings((try decodeBencode("6:banana")).btype.string, "banana");
@@ -159,4 +197,11 @@ test "integers" {
     try std.testing.expectError(error.MalformedInput, decodeBencode("ihelloe"));
     try std.testing.expectError(error.InvalidEncoding, decodeBencode("i010e"));
     try std.testing.expectError(error.InvalidEncoding, decodeBencode("i-02e"));
+}
+
+test "lists" {
+    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananae")).btype, (try decodeBencode("l6:bananae")).btype), true);
+    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananae")).btype, (try decodeBencode("l6:thoughe")).btype), false);
+    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananali-52e5:helloeee")).btype, (try decodeBencode("l6:bananai-52ee")).btype), false);
+    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananali-52e5:helloeee")).btype, (try decodeBencode("l6:bananali-52e5:helloeee")).btype), true);
 }
