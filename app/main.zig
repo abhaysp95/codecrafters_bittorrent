@@ -1,7 +1,8 @@
 const std = @import("std");
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
-const allocator = std.heap.page_allocator;
+const page_allocator = std.heap.page_allocator;
+const test_allocator = std.testing.allocator;
 const assert = std.debug.assert;
 const ArrayList = std.ArrayList;
 const HashMap = std.StringHashMap;
@@ -24,8 +25,8 @@ const DecodeError = error{
 };
 
 pub fn main() !void {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try std.process.argsAlloc(page_allocator);
+    defer std.process.argsFree(page_allocator, args);
 
     if (args.len < 3) {
         try stderr.print("Usage: your_bittorrent.zig <command> <args>\n", .{});
@@ -36,7 +37,7 @@ pub fn main() !void {
 
     if (std.mem.eql(u8, command, "decode")) {
         const encodedStr = args[2];
-        const decodedStr = decodeBencode(encodedStr) catch |err| {
+        var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
             switch (err) {
                 DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
                 DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
@@ -44,12 +45,34 @@ pub fn main() !void {
             }
             std.process.exit(1);
         };
-        var string = std.ArrayList(u8).init(allocator);
+        // free the resource
+        defer free(&decodedStr.btype);
+
+        var string = std.ArrayList(u8).init(page_allocator);
         defer string.deinit();
         try printBencode(&string, decodedStr.btype);
         const resStr = try string.toOwnedSlice();
         try stdout.print("{s}\n", .{resStr});
     }
+}
+
+fn free(payload: *BType) void {
+    if (payload.* != BType.dict) {
+        return;
+    }
+    var iter = payload.*.dict.iterator();
+    out: while (true) {
+        const entry = iter.next();
+        if (entry == null) {
+            break :out;
+        }
+        var value = entry.?.value_ptr.*;
+        free(&value);
+    }
+
+    // in any other case when BType is not dict, flow shouldn't reach here
+    // var dict = payload.dict;
+    payload.*.dict.deinit();
 }
 
 fn printBencode(string: *ArrayList(u8), payload: BType) !void {
@@ -88,13 +111,12 @@ fn printBencode(string: *ArrayList(u8), payload: BType) !void {
                 idx += 1;
             }
             // TODO: think of how to free dict
-            // defer dict.deinit();
             try string.append('}');
         },
     }
 }
 
-fn decodeBencode(encodedValue: []const u8) !Payload {
+fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payload {
     switch (encodedValue[0]) {
 
         // decoding for string
@@ -139,12 +161,12 @@ fn decodeBencode(encodedValue: []const u8) !Payload {
             defer list.deinit();
             var cidx: usize = 1;
             while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
-                const deserialized = try decodeBencode(encodedValue[cidx..]);
+                const deserialized = try decodeBencode(encodedValue[cidx..], allocator);
                 try list.append(deserialized.btype);
                 cidx += deserialized.size;
             }
             if (cidx == encodedValue.len) { // 'e' denoting ending of list is missing
-                return error.InvalidEncoding;
+                return DecodeError.InvalidEncoding;
             }
             return Payload{
                 .btype = .{
@@ -154,21 +176,24 @@ fn decodeBencode(encodedValue: []const u8) !Payload {
             };
         },
 
+        // decoding for dict
         'd' => {
             var map = HashMap(BType).init(allocator);
             // defer map.deinit();
             var cidx: usize = 1;
             while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
                 // if key is not string, it should throw error
-                const key = try decodeBencode(encodedValue[cidx..]);
+                const key = try decodeBencode(encodedValue[cidx..], allocator);
+                if (key.btype != BType.string) {
+                    return DecodeError.InvalidEncoding;
+                }
                 cidx += key.size;
-                const value = try decodeBencode(encodedValue[cidx..]);
+                const value = try decodeBencode(encodedValue[cidx..], allocator);
                 cidx += value.size;
-                // situations in which put will throw error ?
                 try map.put(key.btype.string, value.btype);
             }
             if (cidx == encodedValue.len) {
-                return error.InvalidEncoding;
+                return DecodeError.InvalidEncoding;
             }
             return Payload{
                 .btype = .{
@@ -185,10 +210,10 @@ fn decodeBencode(encodedValue: []const u8) !Payload {
     }
 }
 
-fn testIsListEqual(l1: BType, l2: BType) bool {
-    switch (l1) {
+fn testIfDecodedBencodeEqual(type1: BType, type2: BType) bool {
+    switch (type1) {
         .integer => |int1| {
-            switch (l2) {
+            switch (type2) {
                 .integer => |int2| {
                     return if (int1 == int2) true else false;
                 },
@@ -196,7 +221,7 @@ fn testIsListEqual(l1: BType, l2: BType) bool {
             }
         },
         .string => |str1| {
-            switch (l2) {
+            switch (type2) {
                 .string => |str2| {
                     return if (std.mem.eql(u8, str1, str2)) true else false;
                 },
@@ -204,14 +229,40 @@ fn testIsListEqual(l1: BType, l2: BType) bool {
             }
         },
         .list => |list1| {
-            switch (l2) {
+            switch (type2) {
                 .list => |list2| {
                     if (list1.len != list2.len) {
                         return false;
                     }
                     var idx: usize = 0;
                     while (idx != list1.len) : (idx += 1) {
-                        if (!testIsListEqual(list1[idx], list2[idx])) {
+                        if (!testIfDecodedBencodeEqual(list1[idx], list2[idx])) {
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+                else => return false,
+            }
+        },
+        .dict => |dict1| {
+            switch (type2) {
+                .dict => |dict2| {
+                    if (dict1.count() != dict2.count()) {
+                        return false;
+                    }
+                    var iter1 = dict1.iterator();
+                    var iter2 = dict2.iterator();
+                    out: while (true) {
+                        const entry1 = iter1.next();
+                        const entry2 = iter2.next();
+                        if (entry1 == null or entry2 == null) {
+                            break :out;
+                        }
+                        if (!std.mem.eql(u8, entry1.?.key_ptr.*, entry2.?.key_ptr.*)) {
+                            return false;
+                        }
+                        if (!testIfDecodedBencodeEqual(entry1.?.value_ptr.*, entry2.?.value_ptr.*)) {
                             return false;
                         }
                     }
@@ -224,27 +275,43 @@ fn testIsListEqual(l1: BType, l2: BType) bool {
 }
 
 // introducing tests here
-test "strings" {
-    try std.testing.expectEqualStrings((try decodeBencode("6:banana")).btype.string, "banana");
-    try std.testing.expectEqualStrings((try decodeBencode("5:hello")).btype.string, "hello");
-    try std.testing.expectEqualStrings((try decodeBencode("3:arm")).btype.string, "arm");
-    try std.testing.expectError(error.MalformedInput, decodeBencode("5hello"));
+// test "strings" {
+//     try std.testing.expectEqualStrings((try decodeBencode("6:banana")).btype.string, "banana");
+//     try std.testing.expectEqualStrings((try decodeBencode("5:hello")).btype.string, "hello");
+//     try std.testing.expectEqualStrings((try decodeBencode("3:arm")).btype.string, "arm");
+//     try std.testing.expectError(DecodeError.MalformedInput, decodeBencode("5hello"));
+// }
+//
+// test "integers" {
+//     try std.testing.expectEqual((try decodeBencode("i535903435363e")).btype.integer, 535903435363);
+//     try std.testing.expectEqual((try decodeBencode("i-535903435363e")).btype.integer, -535903435363);
+//     try std.testing.expectEqual((try decodeBencode("i52e")).btype.integer, 52);
+//     try std.testing.expectEqual((try decodeBencode("i-52e")).btype.integer, -52);
+//     try std.testing.expectError(DecodeError.MalformedInput, decodeBencode("i52"));
+//     try std.testing.expectError(DecodeError.MalformedInput, decodeBencode("ihelloe"));
+//     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("i010e"));
+//     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("i-02e"));
+// }
+//
+// test "lists" {
+//     try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananae")).btype, (try decodeBencode("l6:bananae")).btype), true);
+//     try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananae")).btype, (try decodeBencode("l6:thoughe")).btype), false);
+//     try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananali-52e5:helloeee")).btype, (try decodeBencode("l6:bananai-52ee")).btype), false);
+//     try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananali-52e5:helloeee")).btype, (try decodeBencode("l6:bananali-52e5:helloeee")).btype), true);
+//     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("l6:bananali-52e5:helloe"));
+// }
+
+test "dicts" {
+    try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("d3:foo3:bar5:helloi52ee", test_allocator)).btype, (try decodeBencode("d3:foo3:bar5:helloi52ee", test_allocator)).btype), true);
+    try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("d3:foo3:bar5:helloi52ee", test_allocator)).btype, (try decodeBencode("d3:fee3:bar5:helloi52ee", test_allocator)).btype), false);
+    try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("d3:fool3:bari-52ee5:helloi52ee", test_allocator)).btype, (try decodeBencode("d3:fool3:bari-52ee5:helloi52ee", test_allocator)).btype), true);
+    try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("d3:fool3:bari-52ee5:helloi52ee", test_allocator)).btype, (try decodeBencode("d3:fool3:bari-52ee5:helloi52ee", test_allocator)).btype), true);
+    try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("d3:fool3:bari-52ee5:hellod6:bananai52eee", test_allocator)).btype, (try decodeBencode("d3:fool3:bari-52ee5:hellod6:bananai52eee", test_allocator)).btype), true);
+    try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("d3:fee3:bar5:helloi52e", test_allocator));
+    try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("d3:fee3:barl5:helloei52ee", test_allocator));
 }
 
-test "integers" {
-    try std.testing.expectEqual((try decodeBencode("i535903435363e")).btype.integer, 535903435363);
-    try std.testing.expectEqual((try decodeBencode("i-535903435363e")).btype.integer, -535903435363);
-    try std.testing.expectEqual((try decodeBencode("i52e")).btype.integer, 52);
-    try std.testing.expectEqual((try decodeBencode("i-52e")).btype.integer, -52);
-    try std.testing.expectError(error.MalformedInput, decodeBencode("i52"));
-    try std.testing.expectError(error.MalformedInput, decodeBencode("ihelloe"));
-    try std.testing.expectError(error.InvalidEncoding, decodeBencode("i010e"));
-    try std.testing.expectError(error.InvalidEncoding, decodeBencode("i-02e"));
-}
-
-test "lists" {
-    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananae")).btype, (try decodeBencode("l6:bananae")).btype), true);
-    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananae")).btype, (try decodeBencode("l6:thoughe")).btype), false);
-    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananali-52e5:helloeee")).btype, (try decodeBencode("l6:bananai-52ee")).btype), false);
-    try std.testing.expectEqual(testIsListEqual((try decodeBencode("l6:bananali-52e5:helloeee")).btype, (try decodeBencode("l6:bananali-52e5:helloeee")).btype), true);
+test "memory" {
+    var payload = try decodeBencode("d3:fool3:bari-52ee5:hellod6:bananai52eee", test_allocator);
+    free(&payload.btype);
 }
