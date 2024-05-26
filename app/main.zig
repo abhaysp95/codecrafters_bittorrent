@@ -310,11 +310,30 @@ test "integers" {
 }
 
 test "lists" {
-    try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananae", test_allocator)).btype, (try decodeBencode("l6:bananae", test_allocator)).btype), true);
-    // try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananae", test_allocator)).btype, (try decodeBencode("l6:thoughe", test_allocator)).btype), false);
-    // try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananali-52e5:helloeee", test_allocator)).btype, (try decodeBencode("l6:bananai-52ee", test_allocator)).btype), false);
-    // try std.testing.expectEqual(testIfDecodedBencodeEqual((try decodeBencode("l6:bananali-52e5:helloeee", test_allocator)).btype, (try decodeBencode("l6:bananali-52e5:helloeee", test_allocator)).btype), true);
-    // try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("l6:bananali-52e5:helloe", test_allocator));
+    const TestPair = struct {
+        x: []const u8,
+        y: []const u8,
+        out: bool,
+    };
+    var pairs = ArrayList(TestPair).init(test_allocator);
+    defer pairs.deinit();
+    try pairs.append(TestPair{ .x = "l6:bananae", .y = "l6:bananae", .out = true });
+    try pairs.append(TestPair{ .x = "l6:bananae", .y = "l6:thoughe", .out = false });
+    try pairs.append(TestPair{ .x = "l6:bananali-52e5:helloeee", .y = "l6:bananai-52ee", .out = false });
+    try pairs.append(TestPair{ .x = "l6:bananali-52e5:helloeee", .y = "l6:bananali-52e5:helloeee", .out = true });
+
+    for (pairs.items) |pair| {
+        var payload1 = try decodeBencode(pair.x, test_allocator);
+        var payload2 = try decodeBencode(pair.y, test_allocator);
+        try std.testing.expectEqual(testIfDecodedBencodeEqual(payload1.btype, payload2.btype), pair.out);
+        payload1.btype.free(test_allocator);
+        payload2.btype.free(test_allocator);
+    }
+
+    // in case of error, no need to call free explicitly
+    // decodeBencode will free the resources it allocated during execution
+    const payload = decodeBencode("l6:bananali-52e5:helloe", test_allocator);
+    try std.testing.expectError(DecodeError.InvalidEncoding, payload);
 }
 
 test "dicts" {
