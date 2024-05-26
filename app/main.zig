@@ -168,11 +168,20 @@ fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payloa
             var list = ArrayList(BType).init(allocator);
             var cidx: usize = 1;
             while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
-                const deserialized = try decodeBencode(encodedValue[cidx..], allocator);
+                const deserialized = decodeBencode(encodedValue[cidx..], allocator) catch |err| {
+                    list.deinit();
+                    return err;
+                };
                 try list.append(deserialized.btype);
                 cidx += deserialized.size;
             }
             if (cidx == encodedValue.len) { // 'e' denoting ending of list is missing
+                const len = list.items.len;
+                var idx: usize = 0;
+                while (idx < len) : (idx += 1) {
+                    list.items[idx].free(allocator);
+                }
+                list.deinit();
                 return DecodeError.InvalidEncoding;
             }
             return Payload{
