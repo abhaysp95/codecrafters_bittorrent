@@ -1,4 +1,5 @@
 const std = @import("std");
+const fs = std.fs;
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
 const page_allocator = std.heap.page_allocator;
@@ -122,6 +123,13 @@ fn printBencode(string: *ArrayList(u8), payload: BType) !void {
             try string.append('}');
         },
     }
+}
+
+fn read_file(filename: []const u8) !void {
+    const file = try fs.cwd().openFile(filename, .{});
+    const content = try file.reader().readAllAlloc(page_allocator, 1e5);
+
+    try stdout.print("{s}\n", .{content});
 }
 
 fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payload {
