@@ -199,11 +199,12 @@ fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payloa
             var cidx: usize = 1;
             while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
                 // if key is not string, it should throw error
-                const key = decodeBencode(encodedValue[cidx..], allocator) catch |err| {
+                var key = decodeBencode(encodedValue[cidx..], allocator) catch |err| {
                     map.deinit();
                     return err;
                 };
                 if (key.btype != BType.string) {
+                    key.btype.free(allocator); // could possibly be list or a dict
                     map.deinit();
                     return DecodeError.InvalidEncoding;
                 }
@@ -213,9 +214,6 @@ fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payloa
                     return err;
                 };
                 cidx += value.size;
-                // d3:fee3:bar5:helloi52e
-                // {fee:bar,hello:52}
-                // TODO: getting memory leak here with map.put(). Fix it!!!
                 map.put(key.btype.string, value.btype) catch |err| {
                     map.deinit();
                     return err;
@@ -229,8 +227,10 @@ fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payloa
                     const entry = iter.next();
                     if (entry == null) break;
                     var value = entry.?.value_ptr.*;
+                    try stdout.print("key: {s}\n", .{entry.?.key_ptr.*});
                     value.free(allocator);
                 }
+                map.deinit();
                 return DecodeError.InvalidEncoding;
             }
             return Payload{
@@ -377,7 +377,7 @@ test "dicts" {
 
     // decodeBencode will clean up all the resources allocated to it's object in case of failure
     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("d3:fee3:bar5:helloi52e", test_allocator));
-    // try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("d3:fee3:barl5:helloei52ee", test_allocator));
+    try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("d3:fee3:barl5:helloei52ee", test_allocator));
 }
 
 test "memory" {
