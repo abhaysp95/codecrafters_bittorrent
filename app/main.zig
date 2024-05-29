@@ -82,7 +82,55 @@ pub fn main() !void {
         try printBencode(&string, decodedStr.btype);
         const resStr = try string.toOwnedSlice();
         try stdout.print("{s}\n", .{resStr});
+    } else if (std.mem.eql(u8, command, "info")) {
+        const encodedStr = try read_file(args[2]);
+
+        var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
+            switch (err) {
+                DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
+                DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
+                else => try stderr.print("Error occured: {}\n", .{err}),
+            }
+            std.process.exit(1);
+        };
+        // free the resource
+        defer decodedStr.btype.free(page_allocator);
+
+        const payload = try retrieveValue(decodedStr.btype, "length");
+        if (payload) |btype| {
+            var string = ArrayList(u8).init(page_allocator);
+            try printBencode(&string, btype);
+            const result = try string.toOwnedSlice();
+            defer page_allocator.free(result);
+            try stdout.print("{s}\n", .{result});
+        } else {
+            try stderr.print("key not found\n", .{});
+        }
     }
+}
+
+// the payload passed will always be of map type, where we have to retrieve value
+// for provided key
+fn retrieveValue(payload: BType, keyToLookup: []const u8) !?BType {
+
+    // Eg.,
+    // d3:oned4:lovel1:i4:love3:youe4:hatel1:i4:hate3:youee3:twod4:theyi3eee
+    // {"one":{"love":["i","love","you"],"hate":["i","hate","you"]},"two":{"they":3}}
+    if (payload != BType.dict) {
+        return null;
+    }
+    var iterator = payload.dict.iterator();
+    while (iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, keyToLookup)) {
+            return entry.value_ptr.*;
+        }
+        const value = try retrieveValue(entry.value_ptr.*, keyToLookup);
+        if (value) |val| {
+            return val;
+        }
+    }
+    return null;
 }
 
 fn printBencode(string: *ArrayList(u8), payload: BType) !void {
@@ -125,11 +173,13 @@ fn printBencode(string: *ArrayList(u8), payload: BType) !void {
     }
 }
 
-fn read_file(filename: []const u8) !void {
+fn read_file(filename: []const u8) ![]const u8 {
     const file = try fs.cwd().openFile(filename, .{});
+    defer file.close();
+
     const content = try file.reader().readAllAlloc(page_allocator, 1e5);
 
-    try stdout.print("{s}\n", .{content});
+    return content;
 }
 
 fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payload {
