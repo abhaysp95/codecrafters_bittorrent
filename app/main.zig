@@ -96,7 +96,7 @@ pub fn main() !void {
         // free the resource
         defer decodedStr.btype.free(page_allocator);
 
-        const payload = try retrieveValue(decodedStr.btype, "length");
+        const payload = try retrieveValue(decodedStr.btype, "info");
         if (payload) |btype| {
             var string = ArrayList(u8).init(page_allocator);
             try printBencode(&string, btype);
@@ -436,6 +436,13 @@ test "dicts" {
     // decodeBencode will clean up all the resources allocated to it's object in case of failure
     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("d3:fee3:bar5:helloi52e", test_allocator));
     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("d3:fee3:barl5:helloei52ee", test_allocator));
+}
+
+test "retrieveValue" {
+    var payload = try decodeBencode("d3:oned3:twoi2eee", test_allocator);
+    try std.testing.expectEqual((try retrieveValue(payload.btype, "two")).?.integer, 2);
+    try std.testing.expectEqual((try retrieveValue(payload.btype, "three")), null);
+    payload.btype.free(test_allocator);
 }
 
 test "memory" {
