@@ -1,5 +1,6 @@
 const std = @import("std");
 const fs = std.fs;
+const hash = std.crypto.hash;
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
 const page_allocator = std.heap.page_allocator;
@@ -96,17 +97,38 @@ pub fn main() !void {
         // free the resource
         defer decodedStr.btype.free(page_allocator);
 
-        const payload = try retrieveValue(decodedStr.btype, "info");
-        if (payload) |btype| {
-            var string = ArrayList(u8).init(page_allocator);
-            try printBencode(&string, btype);
-            const result = try string.toOwnedSlice();
-            defer page_allocator.free(result);
-            try stdout.print("{s}\n", .{result});
-        } else {
+        const announce_payload = try retrieveValue(decodedStr.btype, "announce");
+        const length_payload = try retrieveValue(decodedStr.btype, "length");
+        if (announce_payload == null or length_payload == null) {
             try stderr.print("key not found\n", .{});
+            std.process.exit(1);
         }
+
+        const announce = try getValueStr(announce_payload.?);
+        const length = try getValueStr(length_payload.?);
+        defer page_allocator.free(announce);
+        defer page_allocator.free(length);
+        try stdout.print("Tracker URL: {s}\n", .{announce});
+        try stdout.print("Length: {s}\n", .{length});
+
+        const info_payload = try retrieveValue(decodedStr.btype, "info");
+        if (info_payload == null) {
+            try stderr.print("key not found\n", .{});
+            std.process.exit(1);
+        }
+
+        const info = try getValueStr(info_payload.?);
+        defer page_allocator.free(info);
+        var hash_buf: [hash.Sha1.digest_length]u8 = undefined;
+        hash.Sha1.hash(info, &hash_buf, .{});
+        try stdout.print("Info Hash: {s}\n", .{std.fmt.bytesToHex(hash_buf, .lower)});
     }
+}
+
+fn getValueStr(payload: BType) ![]const u8 {
+    var announce = ArrayList(u8).init(page_allocator);
+    try printBencode(&announce, payload);
+    return announce.toOwnedSlice();
 }
 
 // the payload passed will always be of map type, where we have to retrieve value
