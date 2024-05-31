@@ -84,7 +84,8 @@ pub fn main() !void {
         const resStr = try string.toOwnedSlice();
         try stdout.print("{s}\n", .{resStr});
     } else if (std.mem.eql(u8, command, "info")) {
-        const encodedStr = try read_file(args[2]);
+        // const encodedStr = try read_file(args[2]);
+        const encodedStr = args[2];
 
         var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
             switch (err) {
@@ -97,31 +98,39 @@ pub fn main() !void {
         // free the resource
         defer decodedStr.btype.free(page_allocator);
 
-        const announce_payload = try retrieveValue(decodedStr.btype, "announce");
-        const length_payload = try retrieveValue(decodedStr.btype, "length");
-        if (announce_payload == null or length_payload == null) {
-            try stderr.print("key not found\n", .{});
-            std.process.exit(1);
-        }
+        // const announce_payload = try retrieveValue(decodedStr.btype, "announce");
+        // const length_payload = try retrieveValue(decodedStr.btype, "length");
+        // if (announce_payload == null or length_payload == null) {
+        //     try stderr.print("key not found\n", .{});
+        //     std.process.exit(1);
+        // }
+        //
+        // const announce = try getValueStr(announce_payload.?);
+        // const length = try getValueStr(length_payload.?);
+        // defer page_allocator.free(announce);
+        // defer page_allocator.free(length);
+        // try stdout.print("Tracker URL: {s}\n", .{announce});
+        // try stdout.print("Length: {s}\n", .{length});
+        //
+        // const info_payload = try retrieveValue(decodedStr.btype, "info");
+        // if (info_payload == null) {
+        //     try stderr.print("key not found\n", .{});
+        //     std.process.exit(1);
+        // }
+        //
+        // const info = try getValueStr(info_payload.?);
+        // defer page_allocator.free(info);
+        // var hash_buf: [hash.Sha1.digest_length]u8 = undefined;
+        // hash.Sha1.hash(info, &hash_buf, .{});
+        // try stdout.print("Info: {s}\n", .{info});
+        // try stdout.print("Info Hash: {s}\n", .{std.fmt.bytesToHex(hash_buf, .lower)});
 
-        const announce = try getValueStr(announce_payload.?);
-        const length = try getValueStr(length_payload.?);
-        defer page_allocator.free(announce);
-        defer page_allocator.free(length);
-        try stdout.print("Tracker URL: {s}\n", .{announce});
-        try stdout.print("Length: {s}\n", .{length});
-
-        const info_payload = try retrieveValue(decodedStr.btype, "info");
-        if (info_payload == null) {
-            try stderr.print("key not found\n", .{});
-            std.process.exit(1);
-        }
-
-        const info = try getValueStr(info_payload.?);
-        defer page_allocator.free(info);
-        var hash_buf: [hash.Sha1.digest_length]u8 = undefined;
-        hash.Sha1.hash(info, &hash_buf, .{});
-        try stdout.print("Info Hash: {s}\n", .{std.fmt.bytesToHex(hash_buf, .lower)});
+        var reEncoded = ArrayList(u8).init(page_allocator);
+        try stdout.print("decode: {s}\n", .{try getValueStr(decodedStr.btype)});
+        try encodeBencode(&reEncoded, decodedStr.btype);
+        const reEncodedStr = try reEncoded.toOwnedSlice();
+        defer page_allocator.free(reEncodedStr);
+        try stdout.print("encode: {s}\n", .{reEncodedStr});
     }
 }
 
@@ -202,6 +211,45 @@ fn read_file(filename: []const u8) ![]const u8 {
     const content = try file.reader().readAllAlloc(page_allocator, 1e5);
 
     return content;
+}
+
+fn encodeBencode(string: *ArrayList(u8), payload: BType) !void {
+    switch (payload) {
+        .string => |str| {
+            const strlen = @as(usize, @intFromFloat(@log10(@as(f64, @floatFromInt(str.len))))) + 1;
+            const buf = try page_allocator.alloc(u8, strlen);
+            defer page_allocator.free(buf);
+            try string.appendSlice(try std.fmt.bufPrint(buf, "{d}", .{str.len}));
+            try string.append(':');
+            try string.appendSlice(str);
+        },
+        .integer => |integer| {
+            try string.append('i');
+            var intLen: usize = @intFromFloat(@log10(@as(f64, @floatFromInt(if (integer < 0) -integer else integer))));
+            intLen += if (integer < 0) 2 else 1;
+            const buf = try page_allocator.alloc(u8, intLen);
+            try stdout.print("integer: {d}, len: {d}, buflen: {d}\n", .{ integer, intLen, buf.len });
+            defer page_allocator.free(buf);
+            try string.appendSlice(try std.fmt.bufPrint(buf, "{d}", .{integer}));
+            try string.append('e');
+        },
+        .list => |list| {
+            try string.append('l');
+            for (list) |item| {
+                try encodeBencode(string, item);
+            }
+            try string.append('e');
+        },
+        .dict => |dict| {
+            try string.append('d');
+            var iterator = dict.iterator();
+            while (iterator.next()) |entry| {
+                try encodeBencode(string, BType{ .string = entry.key_ptr.* });
+                try encodeBencode(string, entry.value_ptr.*);
+            }
+            try string.append('e');
+        },
+    }
 }
 
 fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payload {
