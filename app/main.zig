@@ -444,14 +444,14 @@ const TestPair = struct {
 };
 
 // introducing tests here
-test "strings" {
+test "decodeStrings" {
     try std.testing.expectEqualStrings((try decodeBencode("6:banana", test_allocator)).btype.string, "banana");
     try std.testing.expectEqualStrings((try decodeBencode("5:hello", test_allocator)).btype.string, "hello");
     try std.testing.expectEqualStrings((try decodeBencode("3:arm", test_allocator)).btype.string, "arm");
     try std.testing.expectError(DecodeError.MalformedInput, decodeBencode("5hello", test_allocator));
 }
 
-test "integers" {
+test "decodeIntegers" {
     try std.testing.expectEqual((try decodeBencode("i535903435363e", test_allocator)).btype.integer, 535903435363);
     try std.testing.expectEqual((try decodeBencode("i-535903435363e", test_allocator)).btype.integer, -535903435363);
     try std.testing.expectEqual((try decodeBencode("i52e", test_allocator)).btype.integer, 52);
@@ -462,7 +462,7 @@ test "integers" {
     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("i-02e", test_allocator));
 }
 
-test "lists" {
+test "decodeLists" {
     var pairs = ArrayList(TestPair).init(test_allocator);
     defer pairs.deinit();
     try pairs.append(TestPair{ .x = "l6:bananae", .y = "l6:bananae", .out = true });
@@ -483,7 +483,7 @@ test "lists" {
     try std.testing.expectError(DecodeError.InvalidEncoding, decodeBencode("l6:bananali-52e5:helloe", test_allocator));
 }
 
-test "dicts" {
+test "decodeDicts" {
     var pairs = ArrayList(TestPair).init(test_allocator);
     defer pairs.deinit();
     try pairs.append(TestPair{ .x = "d3:foo3:bar5:helloi52ee", .y = "d3:foo3:bar5:helloi52ee", .out = true });
