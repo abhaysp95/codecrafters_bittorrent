@@ -342,7 +342,6 @@ fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payloa
                     const entry = iter.next();
                     if (entry == null) break;
                     var value = entry.?.value_ptr.*;
-                    try stdout.print("key: {s}\n", .{entry.?.key_ptr.*});
                     value.free(allocator);
                 }
                 map.deinit();
@@ -508,8 +507,8 @@ test "dicts" {
 
 test "retrieveValue" {
     var payload = try decodeBencode("d3:oned3:twoi2eee", test_allocator);
-    try std.testing.expectEqual((try retrieveValue(payload.btype, "two")).?.integer, 2);
-    try std.testing.expectEqual((try retrieveValue(payload.btype, "three")), null);
+    try std.testing.expectEqual((try retrieveValue(&payload.btype, "two")).?.integer, 2);
+    try std.testing.expectEqual((try retrieveValue(&payload.btype, "three")), null);
     payload.btype.free(test_allocator);
 }
 
