@@ -94,34 +94,25 @@ pub fn main() !void {
             }
             std.process.exit(1);
         };
-        // free the resource
         defer decodedStr.btype.free(page_allocator);
 
-        const announce_payload = try retrieveValue(decodedStr.btype, "announce");
-        const length_payload = try retrieveValue(decodedStr.btype, "length");
-        if (announce_payload == null or length_payload == null) {
+        const announce_payload = try retrieveValue(&decodedStr.btype, "announce");
+        const length_payload = try retrieveValue(&decodedStr.btype, "length");
+        const info_payload = try retrieveValue(&decodedStr.btype, "info");
+        if (announce_payload == null or length_payload == null or info_payload == null) {
             try stderr.print("key not found\n", .{});
             std.process.exit(1);
         }
 
-        const announce = try getValueStr(&announce_payload.?);
-        const length = try getValueStr(&length_payload.?);
+        const announce = try getValueStr(announce_payload.?);
+        const length = try getValueStr(length_payload.?);
         defer page_allocator.free(announce);
         defer page_allocator.free(length);
         try stdout.print("Tracker URL: {s}\n", .{announce});
         try stdout.print("Length: {s}\n", .{length});
 
-        const info_payload = try retrieveValue(decodedStr.btype, "info");
-        if (info_payload == null) {
-            try stderr.print("key not found\n", .{});
-            std.process.exit(1);
-        }
-
-        // const infoEncoded = try getValueStr(&info_payload.?);
-        // defer page_allocator.free(infoEncoded);
-
         var infoBuf = ArrayList(u8).init(page_allocator);
-        try encodeBencode(&infoBuf, &info_payload.?, page_allocator);
+        try encodeBencode(&infoBuf, info_payload.?, page_allocator);
         const infoEncoded = try infoBuf.toOwnedSlice();
         defer page_allocator.free(infoEncoded);
 
@@ -139,21 +130,21 @@ fn getValueStr(payload: *const BType) ![]const u8 {
 
 // the payload passed will always be of map type, where we have to retrieve value
 // for provided key
-fn retrieveValue(payload: BType, keyToLookup: []const u8) !?BType {
+fn retrieveValue(payload: *const BType, keyToLookup: []const u8) !?*const BType {
 
     // Eg.,
     // d3:oned4:lovel1:i4:love3:youe4:hatel1:i4:hate3:youee3:twod4:theyi3eee
     // {"one":{"love":["i","love","you"],"hate":["i","hate","you"]},"two":{"they":3}}
-    if (payload != BType.dict) {
+    if (payload.* != BType.dict) {
         return null;
     }
     var iterator = payload.dict.iterator();
     while (iterator.next()) |entry| {
         const key = entry.key_ptr.*;
         if (std.mem.eql(u8, key, keyToLookup)) {
-            return entry.value_ptr.*;
+            return &entry.value_ptr.*;
         }
-        const value = try retrieveValue(entry.value_ptr.*, keyToLookup);
+        const value = try retrieveValue(&entry.value_ptr.*, keyToLookup);
         if (value) |val| {
             return val;
         }
