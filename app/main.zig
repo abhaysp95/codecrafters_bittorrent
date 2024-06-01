@@ -7,13 +7,13 @@ const page_allocator = std.heap.page_allocator;
 const test_allocator = std.testing.allocator;
 const assert = std.debug.assert;
 const ArrayList = std.ArrayList;
-const HashMap = std.StringHashMap;
+const ArrayHashMap = std.StringArrayHashMap;
 
 const BType = union(enum) {
     string: []const u8,
     integer: isize,
     list: []BType,
-    dict: HashMap(BType),
+    dict: ArrayHashMap(BType),
 
     fn free(payload: *@This(), allocator: std.mem.Allocator) void {
         switch (payload.*) {
@@ -322,7 +322,7 @@ fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payloa
 
         // decoding for dict
         'd' => {
-            var map = HashMap(BType).init(allocator);
+            var map = ArrayHashMap(BType).init(allocator);
             // defer map.deinit();
             var cidx: usize = 1;
             while (cidx < encodedValue.len and encodedValue[cidx] != 'e') {
@@ -361,6 +361,17 @@ fn decodeBencode(encodedValue: []const u8, allocator: std.mem.Allocator) !Payloa
                 map.deinit();
                 return DecodeError.InvalidEncoding;
             }
+
+            const Ctx = struct {
+                map: ArrayHashMap(BType),
+
+                pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+                    const keys = ctx.map.keys();
+                    return std.mem.order(u8, keys[a], keys[b]).compare(std.math.CompareOperator.lt);
+                }
+            };
+
+            map.sort(Ctx{ .map = map });
             return Payload{
                 .btype = .{
                     .dict = map,
