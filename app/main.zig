@@ -512,6 +512,21 @@ test "retrieveValue" {
     payload.btype.free(test_allocator);
 }
 
+test "encodeBencode" {
+    const bencodes = [_]struct { input: []const u8, output: []const u8 }{ .{ .input = "d5:hellod6:bananai52ee3:fool3:bari-52eee", .output = "d3:fool3:bari-52ee5:hellod6:bananai52eee" }, .{ .input = "d5:hellod6:bananai52e3:armi1000ee3:fool3:bari-52eee", .output = "d3:fool3:bari-52ee5:hellod3:armi1000e6:bananai52eee" } };
+
+    for (bencodes) |bencode| {
+        var encodeBuf = ArrayList(u8).init(test_allocator);
+        var payload = try decodeBencode(bencode.input, test_allocator);
+        defer payload.btype.free(test_allocator);
+
+        try encodeBencode(&encodeBuf, &payload.btype, test_allocator);
+        const encoded = try encodeBuf.toOwnedSlice();
+        defer test_allocator.free(encoded);
+        try std.testing.expectEqualSlices(u8, encoded, bencode.output);
+    }
+}
+
 test "memory" {
     var payload = try decodeBencode("d3:fool3:bari-52ee5:hellod6:bananai52eee", test_allocator);
     // var payload = try decodeBencode("l6:bananali-52e5:helloeee", test_allocator);
