@@ -111,6 +111,11 @@ pub fn main() !void {
         var hash_buf: [hash.Sha1.digest_length]u8 = undefined;
         hash.Sha1.hash(infoEncoded, &hash_buf, .{});
         try stdout.print("Info: {s}\n", .{std.fmt.bytesToHex(hash_buf, .lower)});
+
+        // print piece length for the file
+        const pieceLength = try getMetainfoValues("piece length", &decodedStr.btype);
+        defer page_allocator.free(pieceLength);
+        try stdout.print("Piece Length: {s}\n", .{pieceLength});
     }
 }
 
