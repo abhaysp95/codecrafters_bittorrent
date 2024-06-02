@@ -96,24 +96,16 @@ pub fn main() !void {
         };
         defer decodedStr.btype.free(page_allocator);
 
-        const announce_payload = try retrieveValue(&decodedStr.btype, "announce");
-        const length_payload = try retrieveValue(&decodedStr.btype, "length");
-        const info_payload = try retrieveValue(&decodedStr.btype, "info");
-        if (announce_payload == null or length_payload == null or info_payload == null) {
-            try stderr.print("key not found\n", .{});
-            std.process.exit(1);
-        }
-
-        const announce = try getValueStr(announce_payload.?);
-        const length = try getValueStr(length_payload.?);
+        // print URL and file length
+        const announce = try getMetainfoValues("announce", &decodedStr.btype);
+        const length = try getMetainfoValues("length", &decodedStr.btype);
         defer page_allocator.free(announce);
         defer page_allocator.free(length);
         try stdout.print("Tracker URL: {s}\n", .{announce});
         try stdout.print("Length: {s}\n", .{length});
 
-        var infoBuf = ArrayList(u8).init(page_allocator);
-        try encodeBencode(&infoBuf, info_payload.?, page_allocator);
-        const infoEncoded = try infoBuf.toOwnedSlice();
+        // print info dictionary hash
+        const infoEncoded = try getMetainfoEncodedValue("info", &decodedStr.btype);
         defer page_allocator.free(infoEncoded);
 
         var hash_buf: [hash.Sha1.digest_length]u8 = undefined;
@@ -122,10 +114,32 @@ pub fn main() !void {
     }
 }
 
+fn getMetainfoEncodedValue(key: []const u8, payload: *BType) ![]const u8 {
+    const value = try retrieveValue(payload, key);
+    if (value == null) {
+        try stderr.print("key not found\n", .{});
+        std.process.exit(1);
+    }
+    var encodeBuf = ArrayList(u8).init(page_allocator);
+    try encodeBencode(&encodeBuf, value.?, page_allocator);
+    const encodedSlice = try encodeBuf.toOwnedSlice();
+
+    return encodedSlice;
+}
+
+fn getMetainfoValues(key: []const u8, payload: *BType) ![]const u8 {
+    const value = try retrieveValue(payload, key);
+    if (value == null) {
+        try stderr.print("key not found\n", .{});
+        std.process.exit(1);
+    }
+    return try getValueStr(value.?);
+}
+
 fn getValueStr(payload: *const BType) ![]const u8 {
-    var announce = ArrayList(u8).init(page_allocator);
-    try printBencode(&announce, payload);
-    return announce.toOwnedSlice();
+    var buf = ArrayList(u8).init(page_allocator);
+    try printBencode(&buf, payload);
+    return buf.toOwnedSlice();
 }
 
 // the payload passed will always be of map type, where we have to retrieve value
