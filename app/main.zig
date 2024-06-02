@@ -96,6 +96,12 @@ pub fn main() !void {
         };
         defer decodedStr.btype.free(page_allocator);
 
+        // var string = std.ArrayList(u8).init(page_allocator);
+        // defer string.deinit();
+        // try printBencode(&string, &decodedStr.btype);
+        // const resStr = try string.toOwnedSlice();
+        // try stdout.print("{s}\n", .{resStr});
+
         // print URL and file length
         const announce = try getMetainfoValues("announce", &decodedStr.btype);
         const length = try getMetainfoValues("length", &decodedStr.btype);
@@ -116,6 +122,39 @@ pub fn main() !void {
         const pieceLength = try getMetainfoValues("piece length", &decodedStr.btype);
         defer page_allocator.free(pieceLength);
         try stdout.print("Piece Length: {s}\n", .{pieceLength});
+
+        try stdout.print("Piece Hashes:\n", .{});
+        const pieces = try retrieveValue(&decodedStr.btype, "pieces");
+        if (pieces == null) {
+            try stderr.print("key not found\n", .{});
+            std.process.exit(1);
+        }
+        try stdout.print("{}\n", .{pieces.?.*});
+
+        var piecesWindow = std.mem.window(u8, pieces.?.*.string, 20, 20);
+        while (piecesWindow.next()) |window| {
+            try stdout.print("{}\n", .{std.fmt.fmtSliceHexLower(window)});
+        }
+
+        // if (pieces.?.* == BType.string) {
+        //     try stdout.print("true string\n", .{});
+        // } else if (pieces.?.* == BType.list) {
+        //     try stdout.print("true list\n", .{});
+        // }
+
+        // const piecesSlice = try getValueStr(pieces.?);
+        // page_allocator.free(piecesSlice);
+        // try stdout.print("{s}\n", .{piecesSlice});
+
+        // for (pieces.?.*) |piece| {
+        //     var encodeBuf = ArrayList(u8).init(page_allocator);
+        //     try encodeBencode(&encodeBuf, &piece, page_allocator);
+        //     const encodedSlice = try encodeBuf.toOwnedSlice();
+        //
+        //     var pieceHashBuf: [hash.Sha1.digest_length]u8 = undefined;
+        //     hash.Sha1.hash(encodedSlice, &pieceHashBuf, .{});
+        //     try stdout.print("{s}\n", .{std.fmt.bytesToHex(pieceHashBuf, .lower)});
+        // }
     }
 }
 
