@@ -96,14 +96,8 @@ pub fn main() !void {
         };
         defer decodedStr.btype.free(page_allocator);
 
-        // var string = std.ArrayList(u8).init(page_allocator);
-        // defer string.deinit();
-        // try printBencode(&string, &decodedStr.btype);
-        // const resStr = try string.toOwnedSlice();
-        // try stdout.print("{s}\n", .{resStr});
-
         // print URL and file length
-        const announce = try getMetainfoValues("announce", &decodedStr.btype);
+        var announce = try getMetainfoValues("announce", &decodedStr.btype);
         const length = try getMetainfoValues("length", &decodedStr.btype);
         defer page_allocator.free(announce);
         defer page_allocator.free(length);
@@ -129,32 +123,31 @@ pub fn main() !void {
             try stderr.print("key not found\n", .{});
             std.process.exit(1);
         }
-        try stdout.print("{}\n", .{pieces.?.*});
 
         var piecesWindow = std.mem.window(u8, pieces.?.*.string, 20, 20);
         while (piecesWindow.next()) |window| {
             try stdout.print("{}\n", .{std.fmt.fmtSliceHexLower(window)});
         }
 
-        // if (pieces.?.* == BType.string) {
-        //     try stdout.print("true string\n", .{});
-        // } else if (pieces.?.* == BType.list) {
-        //     try stdout.print("true list\n", .{});
-        // }
+        var client = std.http.Client{ .allocator = page_allocator };
 
-        // const piecesSlice = try getValueStr(pieces.?);
-        // page_allocator.free(piecesSlice);
-        // try stdout.print("{s}\n", .{piecesSlice});
+        announce = announce[1..];
+        announce = announce[0 .. announce.len - 1];
+        const formedURI = try std.fmt.allocPrint(page_allocator, "{s}?peer_id={}&info_hash={s}&port={}&left={s}&downloaded={}&uploaded={}&compact=1", .{ announce, 11223344556677889009, std.fmt.bytesToHex(hash_buf, .lower), 6881, length, 0, 0 });
+        try stdout.print("URL: {s}\n", .{formedURI});
+        const uri = try std.Uri.parse(formedURI);
 
-        // for (pieces.?.*) |piece| {
-        //     var encodeBuf = ArrayList(u8).init(page_allocator);
-        //     try encodeBencode(&encodeBuf, &piece, page_allocator);
-        //     const encodedSlice = try encodeBuf.toOwnedSlice();
-        //
-        //     var pieceHashBuf: [hash.Sha1.digest_length]u8 = undefined;
-        //     hash.Sha1.hash(encodedSlice, &pieceHashBuf, .{});
-        //     try stdout.print("{s}\n", .{std.fmt.bytesToHex(pieceHashBuf, .lower)});
-        // }
+        var serverHeaderBuffer: [1024]u8 = undefined;
+        var req = try client.open(.GET, uri, .{ .server_header_buffer = &serverHeaderBuffer });
+
+        try req.send();
+        try req.wait();
+
+        var res = req.reader();
+        const body = try res.readAllAlloc(page_allocator, 1024);
+        defer page_allocator.free(body);
+
+        try stdout.print("resp: {s}\n", .{body});
     }
 }
 
@@ -262,6 +255,7 @@ fn read_file(filename: []const u8) ![]const u8 {
 fn encodeBencode(string: *ArrayList(u8), payload: *const BType, allocator: std.mem.Allocator) !void {
     switch (payload.*) {
         .string => |str| {
+            // NOTE: could have also used std.fmt for printing len also
             const strlen = @as(usize, @intFromFloat(@log10(@as(f64, @floatFromInt(str.len))))) + 1;
             const buf = try page_allocator.alloc(u8, strlen);
             defer page_allocator.free(buf);
