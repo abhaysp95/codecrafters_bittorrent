@@ -96,14 +96,6 @@ pub fn main() !void {
         };
         defer decodedStr.btype.free(page_allocator);
 
-        // print URL and file length
-        var announce = try getMetainfoValues("announce", &decodedStr.btype);
-        const length = try getMetainfoValues("length", &decodedStr.btype);
-        defer page_allocator.free(announce);
-        defer page_allocator.free(length);
-        try stdout.print("Tracker URL: {s}\n", .{announce});
-        try stdout.print("Length: {s}\n", .{length});
-
         // print info dictionary hash
         const infoEncoded = try getMetainfoEncodedValue("info", &decodedStr.btype);
         defer page_allocator.free(infoEncoded);
@@ -111,29 +103,33 @@ pub fn main() !void {
         var hash_buf: [hash.Sha1.digest_length]u8 = undefined;
         hash.Sha1.hash(infoEncoded, &hash_buf, .{});
         try stdout.print("Info: {s}\n", .{std.fmt.bytesToHex(hash_buf, .lower)});
+        var infoPercentEncodedBuf = ArrayList(u8).init(page_allocator);
+        try std.Uri.Component.format(std.Uri.Component{ .raw = &hash_buf }, "%", .{}, infoPercentEncodedBuf.writer());
+        const infoPercentEncodedSlice = try infoPercentEncodedBuf.toOwnedSlice();
+        defer page_allocator.free(infoPercentEncodedSlice);
 
         // print piece length for the file
         const pieceLength = try getMetainfoValues("piece length", &decodedStr.btype);
         defer page_allocator.free(pieceLength);
-        try stdout.print("Piece Length: {s}\n", .{pieceLength});
 
-        try stdout.print("Piece Hashes:\n", .{});
-        const pieces = try retrieveValue(&decodedStr.btype, "pieces");
-        if (pieces == null) {
-            try stderr.print("key not found\n", .{});
-            std.process.exit(1);
-        }
+        // NOTE: not needed right now
+        // try stdout.print("Piece Hashes:\n", .{});
+        // const pieces = try retrieveValue(&decodedStr.btype, "pieces");
+        // if (pieces == null) {
+        //     try stderr.print("key not found\n", .{});
+        //     std.process.exit(1);
+        // }
+        //
+        // var piecesWindow = std.mem.window(u8, pieces.?.*.string, 20, 20);
+        // while (piecesWindow.next()) |window| {
+        //     try stdout.print("{}\n", .{std.fmt.fmtSliceHexLower(window)});
+        // }
 
-        var piecesWindow = std.mem.window(u8, pieces.?.*.string, 20, 20);
-        while (piecesWindow.next()) |window| {
-            try stdout.print("{}\n", .{std.fmt.fmtSliceHexLower(window)});
-        }
+        const fileLength = try getMetainfoValues("length", &decodedStr.btype);
+        defer page_allocator.free(fileLength);
 
         var client = std.http.Client{ .allocator = page_allocator };
-
-        announce = announce[1..];
-        announce = announce[0 .. announce.len - 1];
-        const formedURI = try std.fmt.allocPrint(page_allocator, "{s}?peer_id={}&info_hash={s}&port={}&left={s}&downloaded={}&uploaded={}&compact=1", .{ announce, 11223344556677889009, std.fmt.bytesToHex(hash_buf, .lower), 6881, length, 0, 0 });
+        const formedURI = try std.fmt.allocPrint(page_allocator, "{s}?peer_id={}&info_hash={s}&port={}&left={s}&downloaded={}&uploaded={}&compact=1", .{ decodedStr.btype.dict.get("announce").?.string, 11223344556677889009, infoPercentEncodedSlice, 6881, fileLength, 0, 0 });
         try stdout.print("URL: {s}\n", .{formedURI});
         const uri = try std.Uri.parse(formedURI);
 
@@ -147,7 +143,17 @@ pub fn main() !void {
         const body = try res.readAllAlloc(page_allocator, 1024);
         defer page_allocator.free(body);
 
-        try stdout.print("resp: {s}\n", .{body});
+        const decodedRespBody = try decodeBencode(body, page_allocator);
+        const peers = decodedRespBody.btype.dict.get("peers").?.string;
+        var peersWindow = std.mem.window(u8, peers, 6, 6);
+        while (peersWindow.next()) |peer| {
+            const ip = peer[0..4];
+            // bigToNative because upon recieving response if host arch in
+            // little endian it would make the resp peer bytes as little endian,
+            // if host arch is big endian this function would do nothing
+            const port = std.mem.bigToNative(std.mem.bytesToValue(u16, peer[4..6]));
+            try stdout.print("{d}.{d}.{d}.{d}:{d}\n", .{ ip[0], ip[1], ip[2], ip[3], port });
+        }
     }
 }
 
