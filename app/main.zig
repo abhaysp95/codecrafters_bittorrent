@@ -59,6 +59,11 @@ const TorrentInfo = struct {
     pieces: *const BType,
 };
 
+const TrackerResponse = struct {
+    interval: *const BType,
+    peers: *const BType,
+};
+
 const DecodeError = error{
     MalformedInput,
     InvalidEncoding,
@@ -140,31 +145,7 @@ pub fn main() !void {
 
             const torrentInfo = try getTorrentInfo(&decodedStr.btype);
 
-            const encodedInfo = try getMetainfoEncodedValue(null, torrentInfo.info, page_allocator);
-            defer page_allocator.free(encodedInfo);
-
-            var hashBuf: [hash.Sha1.digest_length]u8 = undefined;
-            hash.Sha1.hash(encodedInfo, &hashBuf, .{});
-
-            var percentEncodedInfoBuf = ArrayList(u8).init(page_allocator);
-            try std.Uri.Component.format(std.Uri.Component{ .raw = &hashBuf }, "%", .{}, percentEncodedInfoBuf.writer());
-            const percentEncodedInfoSlice = try percentEncodedInfoBuf.toOwnedSlice();
-            defer page_allocator.free(percentEncodedInfoSlice);
-
-            const formedURI = try std.fmt.allocPrint(page_allocator, "{s}?peer_id={}&info_hash={s}&port={}&left={d}&downloaded={}&uploaded={}&compact=1", .{ torrentInfo.announceURL.string, 11223344556677889009, percentEncodedInfoSlice, 6881, torrentInfo.length.integer, 0, 0 });
-            try stdout.print("{s}\n", .{formedURI});
-
-            const uri = try std.Uri.parse(formedURI);
-            var client = std.http.Client{ .allocator = page_allocator };
-
-            var serverHeaderBuffer: [1024]u8 = undefined;
-            var req = try client.open(.GET, uri, .{ .server_header_buffer = &serverHeaderBuffer });
-
-            try req.send();
-            try req.wait();
-
-            var resp = req.reader();
-            const body = try resp.readAllAlloc(page_allocator, 1024);
+            const body = try performPeerDiscovery(&torrentInfo, page_allocator);
 
             var respDecoded = decodeBencode(body, page_allocator) catch |err| {
                 switch (err) {
@@ -176,8 +157,9 @@ pub fn main() !void {
             };
             defer respDecoded.btype.free(page_allocator);
 
-            const peers = (try retrieveValue(&respDecoded.btype, "peers")).?;
-            var windowIter = std.mem.window(u8, peers.string, 6, 6);
+            const trackerInfo = try getTrackerInfo(&respDecoded.btype);
+
+            var windowIter = std.mem.window(u8, trackerInfo.peers.string, 6, 6);
 
             while (windowIter.next()) |entry| {
                 const ip = try std.fmt.allocPrint(page_allocator, "{}.{}.{}.{}", .{ entry[0], entry[1], entry[2], entry[3] });
@@ -188,6 +170,43 @@ pub fn main() !void {
             }
         },
     }
+}
+
+fn getTrackerInfo(payload: *const BType) !TrackerResponse {
+    return TrackerResponse{
+        .interval = (try retrieveValue(payload, "interval")).?,
+        .peers = (try retrieveValue(payload, "peers")).?,
+    };
+}
+
+fn performPeerDiscovery(torrentInfo: *const TorrentInfo, allocator: std.mem.Allocator) ![]const u8 {
+    const encodedInfo = try getMetainfoEncodedValue(null, torrentInfo.info, allocator);
+    defer allocator.free(encodedInfo);
+
+    var hashBuf: [hash.Sha1.digest_length]u8 = undefined;
+    hash.Sha1.hash(encodedInfo, &hashBuf, .{});
+
+    var percentEncodedInfoBuf = ArrayList(u8).init(allocator);
+    try std.Uri.Component.format(std.Uri.Component{ .raw = &hashBuf }, "%", .{}, percentEncodedInfoBuf.writer());
+    const percentEncodedInfoSlice = try percentEncodedInfoBuf.toOwnedSlice();
+    defer allocator.free(percentEncodedInfoSlice);
+
+    const formedURI = try std.fmt.allocPrint(allocator, "{s}?peer_id={}&info_hash={s}&port={}&left={d}&downloaded={}&uploaded={}&compact=1", .{ torrentInfo.announceURL.string, 11223344556677889009, percentEncodedInfoSlice, 6881, torrentInfo.length.integer, 0, 0 });
+    try stdout.print("{s}\n", .{formedURI});
+
+    const uri = try std.Uri.parse(formedURI);
+    var client = std.http.Client{ .allocator = allocator };
+
+    var serverHeaderBuffer: [1024]u8 = undefined;
+    var req = try client.open(.GET, uri, .{ .server_header_buffer = &serverHeaderBuffer });
+
+    try req.send();
+    try req.wait();
+
+    var resp = req.reader();
+    const body = try resp.readAllAlloc(allocator, 1024);
+
+    return body;
 }
 
 fn getMetainfoEncodedValue(key: ?[]const u8, payload: *const BType, allocator: std.mem.Allocator) ![]const u8 {
