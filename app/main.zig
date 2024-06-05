@@ -9,6 +9,8 @@ const assert = std.debug.assert;
 const ArrayList = std.ArrayList;
 const ArrayHashMap = std.StringArrayHashMap;
 
+const Command = enum { decode, info, peers };
+
 const BType = union(enum) {
     string: []const u8,
     integer: isize,
@@ -49,6 +51,14 @@ const Payload = struct {
     size: usize,
 };
 
+const TorrentInfo = struct {
+    announceURL: *const BType,
+    length: *const BType,
+    info: *const BType,
+    pieceLength: *const BType,
+    pieces: *const BType,
+};
+
 const DecodeError = error{
     MalformedInput,
     InvalidEncoding,
@@ -63,108 +73,138 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
-    const command = args[1];
+    const command = std.meta.stringToEnum(Command, args[1]) orelse return;
 
-    if (std.mem.eql(u8, command, "decode")) {
-        const encodedStr = args[2];
-        var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
-            switch (err) {
-                DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
-                DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
-                else => try stderr.print("Error occured: {}\n", .{err}),
+    switch (command) {
+        .decode => {
+            const encodedStr = args[2];
+            var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
+                switch (err) {
+                    DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
+                    DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
+                    else => try stderr.print("Error occured: {}\n", .{err}),
+                }
+                std.process.exit(1);
+            };
+            // free the resource
+            defer decodedStr.btype.free(page_allocator);
+
+            var string = std.ArrayList(u8).init(page_allocator);
+            defer string.deinit();
+            try printBencode(&string, &decodedStr.btype);
+            const resStr = try string.toOwnedSlice();
+            try stdout.print("{s}\n", .{resStr});
+        },
+        .info => {
+            const encodedStr = try read_file(args[2]);
+            var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
+                switch (err) {
+                    DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
+                    DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
+                    else => try stderr.print("Error occured: {}\n", .{err}),
+                }
+                std.process.exit(1);
+            };
+            defer decodedStr.btype.free(page_allocator);
+
+            const torrentInfo = try getTorrentInfo(&decodedStr.btype);
+
+            try stdout.print("Tracker URL: {s}\n", .{torrentInfo.announceURL.string});
+            try stdout.print("Length: {d}\n", .{torrentInfo.length.integer});
+
+            const encodedInfo = try getMetainfoEncodedValue(null, torrentInfo.info, page_allocator);
+            defer page_allocator.free(encodedInfo);
+
+            var hashBuf: [hash.Sha1.digest_length]u8 = undefined;
+            hash.Sha1.hash(encodedInfo, &hashBuf, .{});
+
+            try stdout.print("Info Hash: {s}\n", .{std.fmt.fmtSliceHexLower(&hashBuf)});
+            try stdout.print("Piece Length: {d}\n", .{torrentInfo.pieceLength.integer});
+
+            var windowIter = std.mem.window(u8, torrentInfo.pieces.string, 20, 20);
+            while (windowIter.next()) |entry| {
+                try stdout.print("{s}\n", .{std.fmt.fmtSliceHexLower(entry)});
             }
-            std.process.exit(1);
-        };
-        // free the resource
-        defer decodedStr.btype.free(page_allocator);
+        },
+        .peers => {
+            const encodedStr = try read_file(args[2]);
+            var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
+                switch (err) {
+                    DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
+                    DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
+                    else => try stderr.print("Error occured: {}\n", .{err}),
+                }
+                std.process.exit(1);
+            };
+            defer decodedStr.btype.free(page_allocator);
 
-        var string = std.ArrayList(u8).init(page_allocator);
-        defer string.deinit();
-        try printBencode(&string, &decodedStr.btype);
-        const resStr = try string.toOwnedSlice();
-        try stdout.print("{s}\n", .{resStr});
-    } else if (std.mem.eql(u8, command, "info")) {
-        const encodedStr = try read_file(args[2]);
+            const torrentInfo = try getTorrentInfo(&decodedStr.btype);
 
-        var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
-            switch (err) {
-                DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
-                DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
-                else => try stderr.print("Error occured: {}\n", .{err}),
+            const encodedInfo = try getMetainfoEncodedValue(null, torrentInfo.info, page_allocator);
+            defer page_allocator.free(encodedInfo);
+
+            var hashBuf: [hash.Sha1.digest_length]u8 = undefined;
+            hash.Sha1.hash(encodedInfo, &hashBuf, .{});
+
+            var percentEncodedInfoBuf = ArrayList(u8).init(page_allocator);
+            try std.Uri.Component.format(std.Uri.Component{ .raw = &hashBuf }, "%", .{}, percentEncodedInfoBuf.writer());
+            const percentEncodedInfoSlice = try percentEncodedInfoBuf.toOwnedSlice();
+            defer page_allocator.free(percentEncodedInfoSlice);
+
+            const formedURI = try std.fmt.allocPrint(page_allocator, "{s}?peer_id={}&info_hash={s}&port={}&left={d}&downloaded={}&uploaded={}&compact=1", .{ torrentInfo.announceURL.string, 11223344556677889009, percentEncodedInfoSlice, 6881, torrentInfo.length.integer, 0, 0 });
+            try stdout.print("{s}\n", .{formedURI});
+
+            const uri = try std.Uri.parse(formedURI);
+            var client = std.http.Client{ .allocator = page_allocator };
+
+            var serverHeaderBuffer: [1024]u8 = undefined;
+            var req = try client.open(.GET, uri, .{ .server_header_buffer = &serverHeaderBuffer });
+
+            try req.send();
+            try req.wait();
+
+            var resp = req.reader();
+            const body = try resp.readAllAlloc(page_allocator, 1024);
+
+            var respDecoded = decodeBencode(body, page_allocator) catch |err| {
+                switch (err) {
+                    DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
+                    DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
+                    else => try stderr.print("Error occured: {}\n", .{err}),
+                }
+                std.process.exit(1);
+            };
+            defer respDecoded.btype.free(page_allocator);
+
+            const peers = (try retrieveValue(&respDecoded.btype, "peers")).?;
+            var windowIter = std.mem.window(u8, peers.string, 6, 6);
+
+            while (windowIter.next()) |entry| {
+                const ip = try std.fmt.allocPrint(page_allocator, "{}.{}.{}.{}", .{ entry[0], entry[1], entry[2], entry[3] });
+                defer page_allocator.free(ip);
+                const port = std.mem.bigToNative(u16, std.mem.bytesToValue(u16, entry[4..6]));
+
+                try stdout.print("{s}:{d}\n", .{ ip, port });
             }
-            std.process.exit(1);
-        };
-        defer decodedStr.btype.free(page_allocator);
-
-        // print info dictionary hash
-        const infoEncoded = try getMetainfoEncodedValue("info", &decodedStr.btype);
-        defer page_allocator.free(infoEncoded);
-
-        var hash_buf: [hash.Sha1.digest_length]u8 = undefined;
-        hash.Sha1.hash(infoEncoded, &hash_buf, .{});
-        try stdout.print("Info: {s}\n", .{std.fmt.bytesToHex(hash_buf, .lower)});
-        var infoPercentEncodedBuf = ArrayList(u8).init(page_allocator);
-        try std.Uri.Component.format(std.Uri.Component{ .raw = &hash_buf }, "%", .{}, infoPercentEncodedBuf.writer());
-        const infoPercentEncodedSlice = try infoPercentEncodedBuf.toOwnedSlice();
-        defer page_allocator.free(infoPercentEncodedSlice);
-
-        // print piece length for the file
-        const pieceLength = try getMetainfoValues("piece length", &decodedStr.btype);
-        defer page_allocator.free(pieceLength);
-
-        // NOTE: not needed right now
-        // try stdout.print("Piece Hashes:\n", .{});
-        // const pieces = try retrieveValue(&decodedStr.btype, "pieces");
-        // if (pieces == null) {
-        //     try stderr.print("key not found\n", .{});
-        //     std.process.exit(1);
-        // }
-        //
-        // var piecesWindow = std.mem.window(u8, pieces.?.*.string, 20, 20);
-        // while (piecesWindow.next()) |window| {
-        //     try stdout.print("{}\n", .{std.fmt.fmtSliceHexLower(window)});
-        // }
-
-        const fileLength = try getMetainfoValues("length", &decodedStr.btype);
-        defer page_allocator.free(fileLength);
-
-        var client = std.http.Client{ .allocator = page_allocator };
-        const formedURI = try std.fmt.allocPrint(page_allocator, "{s}?peer_id={}&info_hash={s}&port={}&left={s}&downloaded={}&uploaded={}&compact=1", .{ decodedStr.btype.dict.get("announce").?.string, 11223344556677889009, infoPercentEncodedSlice, 6881, fileLength, 0, 0 });
-        try stdout.print("URL: {s}\n", .{formedURI});
-        const uri = try std.Uri.parse(formedURI);
-
-        var serverHeaderBuffer: [1024]u8 = undefined;
-        var req = try client.open(.GET, uri, .{ .server_header_buffer = &serverHeaderBuffer });
-
-        try req.send();
-        try req.wait();
-
-        var res = req.reader();
-        const body = try res.readAllAlloc(page_allocator, 1024);
-        defer page_allocator.free(body);
-
-        const decodedRespBody = try decodeBencode(body, page_allocator);
-        const peers = decodedRespBody.btype.dict.get("peers").?.string;
-        var peersWindow = std.mem.window(u8, peers, 6, 6);
-        while (peersWindow.next()) |peer| {
-            const ip = peer[0..4];
-            // bigToNative because upon recieving response if host arch in
-            // little endian it would make the resp peer bytes as little endian,
-            // if host arch is big endian this function would do nothing
-            const port = std.mem.bigToNative(u16, std.mem.bytesToValue(u16, peer[4..6]));
-            try stdout.print("{d}.{d}.{d}.{d}:{d}\n", .{ ip[0], ip[1], ip[2], ip[3], port });
-        }
+        },
     }
 }
 
-fn getMetainfoEncodedValue(key: []const u8, payload: *BType) ![]const u8 {
-    const value = try retrieveValue(payload, key);
-    if (value == null) {
-        try stderr.print("key not found\n", .{});
-        std.process.exit(1);
+fn getMetainfoEncodedValue(key: ?[]const u8, payload: *const BType, allocator: std.mem.Allocator) ![]const u8 {
+    var toEncode: *const BType = undefined;
+    if (null != key) {
+        const value = try retrieveValue(payload, key.?);
+        if (value == null) {
+            try stderr.print("key not found\n", .{});
+            std.process.exit(1);
+        }
+        toEncode = value.?;
+    } else {
+        toEncode = payload;
     }
-    var encodeBuf = ArrayList(u8).init(page_allocator);
-    try encodeBencode(&encodeBuf, value.?, page_allocator);
+
+    var encodeBuf = ArrayList(u8).init(allocator);
+    try encodeBencode(&encodeBuf, toEncode, allocator);
     const encodedSlice = try encodeBuf.toOwnedSlice();
 
     return encodedSlice;
@@ -253,9 +293,19 @@ fn read_file(filename: []const u8) ![]const u8 {
     const file = try fs.cwd().openFile(filename, .{});
     defer file.close();
 
-    const content = try file.reader().readAllAlloc(page_allocator, 1e5);
+    const encodedStr = try file.reader().readAllAlloc(page_allocator, 1e5);
 
-    return content;
+    return encodedStr;
+}
+
+fn getTorrentInfo(payload: *const BType) !TorrentInfo {
+    return TorrentInfo{
+        .announceURL = (try retrieveValue(payload, "announce")).?,
+        .info = (try retrieveValue(payload, "info")).?,
+        .length = (try retrieveValue(payload, "length")).?,
+        .pieces = (try retrieveValue(payload, "pieces")).?,
+        .pieceLength = (try retrieveValue(payload, "piece length")).?,
+    };
 }
 
 fn encodeBencode(string: *ArrayList(u8), payload: *const BType, allocator: std.mem.Allocator) !void {
