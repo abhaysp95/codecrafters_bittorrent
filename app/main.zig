@@ -151,7 +151,7 @@ pub fn main() !void {
             // bigToNative because upon recieving response if host arch in
             // little endian it would make the resp peer bytes as little endian,
             // if host arch is big endian this function would do nothing
-            const port = std.mem.bigToNative(std.mem.bytesToValue(u16, peer[4..6]));
+            const port = std.mem.bigToNative(u16, std.mem.bytesToValue(u16, peer[4..6]));
             try stdout.print("{d}.{d}.{d}.{d}:{d}\n", .{ ip[0], ip[1], ip[2], ip[3], port });
         }
     }
