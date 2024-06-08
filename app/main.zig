@@ -9,7 +9,7 @@ const assert = std.debug.assert;
 const ArrayList = std.ArrayList;
 const ArrayHashMap = std.StringArrayHashMap;
 
-const Command = enum { decode, info, peers };
+const Command = enum { decode, info, peers, handshake };
 
 const BType = union(enum) {
     string: []const u8,
@@ -55,6 +55,7 @@ const TorrentInfo = struct {
     announceURL: *const BType,
     length: *const BType,
     info: *const BType,
+    infoHash: [hash.Sha1.digest_length]u8,
     pieceLength: *const BType,
     pieces: *const BType,
 };
@@ -62,6 +63,14 @@ const TorrentInfo = struct {
 const TrackerResponse = struct {
     interval: *const BType,
     peers: *const BType,
+};
+
+const HandshakePayload = extern struct {
+    protoLength: u8 align(1) = 19,
+    ident: [19]u8 align(1) = "BitTorrent protocol".*,
+    reserved: [8]u8 align(1) = std.mem.zeroes([8]u8),
+    infoHash: [20]u8 align(1),
+    peerId: [20]u8 align(1),
 };
 
 const DecodeError = error{
@@ -117,13 +126,7 @@ pub fn main() !void {
             try stdout.print("Tracker URL: {s}\n", .{torrentInfo.announceURL.string});
             try stdout.print("Length: {d}\n", .{torrentInfo.length.integer});
 
-            const encodedInfo = try getMetainfoEncodedValue(null, torrentInfo.info, page_allocator);
-            defer page_allocator.free(encodedInfo);
-
-            var hashBuf: [hash.Sha1.digest_length]u8 = undefined;
-            hash.Sha1.hash(encodedInfo, &hashBuf, .{});
-
-            try stdout.print("Info Hash: {s}\n", .{std.fmt.fmtSliceHexLower(&hashBuf)});
+            try stdout.print("Info Hash: {s}\n", .{std.fmt.fmtSliceHexLower(&torrentInfo.infoHash)});
             try stdout.print("Piece Length: {d}\n", .{torrentInfo.pieceLength.integer});
 
             var windowIter = std.mem.window(u8, torrentInfo.pieces.string, 20, 20);
@@ -169,6 +172,42 @@ pub fn main() !void {
                 try stdout.print("{s}:{d}\n", .{ ip, port });
             }
         },
+        .handshake => {
+            const encodedStr = try read_file(args[2]);
+            var decodedStr = decodeBencode(encodedStr, page_allocator) catch |err| {
+                switch (err) {
+                    DecodeError.InvalidEncoding => try stderr.print("Provided encoding is invalid\n", .{}),
+                    DecodeError.MalformedInput => try stderr.print("0 prefixed length for string decoding is not supported.\n", .{}),
+                    else => try stderr.print("Error occured: {}\n", .{err}),
+                }
+                std.process.exit(1);
+            };
+            defer decodedStr.btype.free(page_allocator);
+
+            const torrentInfo = try getTorrentInfo(&decodedStr.btype);
+
+            const ipWithPort = args[3];
+            const colonIdx = std.mem.indexOf(u8, ipWithPort, ":").?;
+            const ip = ipWithPort[0..colonIdx];
+            const port = try std.fmt.parseInt(u16, ipWithPort[colonIdx + 1 ..], 10);
+
+            const handshake = HandshakePayload{
+                .infoHash = torrentInfo.infoHash,
+                .peerId = "11223344556677889009".*,
+            };
+
+            const address = try std.net.Address.parseIp(ip, port);
+            const stream = try std.net.tcpConnectToAddress(address);
+
+            var reader = stream.reader();
+            var writer = stream.writer();
+
+            try writer.writeStruct(handshake);
+
+            const resp = try reader.readStruct(HandshakePayload);
+
+            try stdout.print("Peer ID: {s}\n", .{std.fmt.fmtSliceHexLower(&resp.peerId)});
+        },
     }
 }
 
@@ -179,15 +218,31 @@ fn getTrackerInfo(payload: *const BType) !TrackerResponse {
     };
 }
 
-fn performPeerDiscovery(torrentInfo: *const TorrentInfo, allocator: std.mem.Allocator) ![]const u8 {
-    const encodedInfo = try getMetainfoEncodedValue(null, torrentInfo.info, allocator);
-    defer allocator.free(encodedInfo);
+fn getTorrentInfo(payload: *const BType) !TorrentInfo {
+    const info = (try retrieveValue(payload, "info")).?;
+
+    const encodedInfo = try getMetainfoEncodedValue(null, info, page_allocator);
+    defer page_allocator.free(encodedInfo);
 
     var hashBuf: [hash.Sha1.digest_length]u8 = undefined;
     hash.Sha1.hash(encodedInfo, &hashBuf, .{});
 
+    const torrentInfo = TorrentInfo{
+        .announceURL = (try retrieveValue(payload, "announce")).?,
+        .info = info,
+        .infoHash = hashBuf,
+        .length = (try retrieveValue(payload, "length")).?,
+        .pieces = (try retrieveValue(payload, "pieces")).?,
+        .pieceLength = (try retrieveValue(payload, "piece length")).?,
+    };
+    // std.mem.copyForwards(u8, torrentInfo.infoHash, &hashBuf);
+
+    return torrentInfo;
+}
+
+fn performPeerDiscovery(torrentInfo: *const TorrentInfo, allocator: std.mem.Allocator) ![]const u8 {
     var percentEncodedInfoBuf = ArrayList(u8).init(allocator);
-    try std.Uri.Component.format(std.Uri.Component{ .raw = &hashBuf }, "%", .{}, percentEncodedInfoBuf.writer());
+    try std.Uri.Component.format(std.Uri.Component{ .raw = &torrentInfo.infoHash }, "%", .{}, percentEncodedInfoBuf.writer());
     const percentEncodedInfoSlice = try percentEncodedInfoBuf.toOwnedSlice();
     defer allocator.free(percentEncodedInfoSlice);
 
@@ -315,16 +370,6 @@ fn read_file(filename: []const u8) ![]const u8 {
     const encodedStr = try file.reader().readAllAlloc(page_allocator, 1e5);
 
     return encodedStr;
-}
-
-fn getTorrentInfo(payload: *const BType) !TorrentInfo {
-    return TorrentInfo{
-        .announceURL = (try retrieveValue(payload, "announce")).?,
-        .info = (try retrieveValue(payload, "info")).?,
-        .length = (try retrieveValue(payload, "length")).?,
-        .pieces = (try retrieveValue(payload, "pieces")).?,
-        .pieceLength = (try retrieveValue(payload, "piece length")).?,
-    };
 }
 
 fn encodeBencode(string: *ArrayList(u8), payload: *const BType, allocator: std.mem.Allocator) !void {
